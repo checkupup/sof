@@ -10,6 +10,8 @@
 #ifndef DAX_H
 #define DAX_H
 
+#include <stdbool.h>
+
 #include <rtos/atomic.h>
 #include <rtos/spinlock.h>
 #include <sof/audio/module_adapter/module/generic.h>
@@ -43,6 +45,42 @@ struct dax_cache_params {
 	struct dax_buffer tuning_file;
 };
 
+/**
+ * @brief Audio path states of the DAX crossfade state machine.
+ */
+enum dax_path_state {
+	DAX_STATE_BYPASS,	/**< Passthrough only, the DAX algorithm is idle */
+	DAX_STATE_PREHEAT,	/**< DAX is primed while passthrough is output */
+	DAX_STATE_FADE_OUT,	/**< Fading the currently active path out */
+	DAX_STATE_FADE_IN,	/**< Fading the destination path in */
+	DAX_STATE_PROCESS,	/**< DAX processing only */
+};
+
+/**
+ * @brief Crossfade state hiding the pop caused by an audio path switch.
+ *
+ * The DAX algorithm has a latency of several blocks, so its output cannot be
+ * mixed with the passthrough signal without a delay line. A path switch is
+ * therefore performed in two steps: the currently active path is faded out to
+ * silence, then the destination path is faded in. This way the two signals are
+ * never mixed and the discontinuity is masked by the fade.
+ *
+ * Requested path changes are ignored while a fade-out/fade-in sequence is in
+ * progress and are only evaluated once the sequence completes.
+ */
+struct dax_crossfade {
+	enum dax_path_state state;	/**< Current state of the state machine */
+	bool fade_from_process;		/**< Path active when the fade-out started */
+	bool fade_to_process;		/**< Destination path of the transition */
+	int32_t gain;			/**< Q31 gain applied to the output */
+	int32_t gain_step;		/**< Q31 gain change per audio frame */
+	uint32_t fade_frames;		/**< Fade-out / fade-in length in frames */
+	uint32_t fade_left;		/**< Frames remaining in the current ramp */
+	uint32_t blocks_fed;		/**< DAX blocks fed while preheating */
+	uint32_t input_period_bytes;	/**< DAX input block size in bytes */
+	struct dax_buffer passthrough_buffer; /**< Passthrough FIFO used while switching */
+};
+
 struct dax_adapter_data {
 	struct dax_cache_params cache_params;
 	atomic_t proc_flags;
@@ -50,6 +88,7 @@ struct dax_adapter_data {
 	int32_t priority;
 	struct k_spinlock lock;
 	char params_str[DAX_PARAMS_STR_BUFFER_SIZE];
+	struct dax_crossfade xfade;
 	struct sof_dax dax_ctx;
 };
 
